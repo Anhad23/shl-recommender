@@ -2,23 +2,35 @@ import json
 import os
 import pickle
 import re
-
-import faiss
 import numpy as np
 from groq import Groq
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from sentence_transformers import SentenceTransformer
 from typing import List
 
 app = FastAPI(title="SHL Assessment Recommender")
 
-# load everything once at startup so requests stay fast
-print("Loading model and index...")
-embed_model = SentenceTransformer("all-MiniLM-L6-v2")
-index = faiss.read_index("catalog.index")
+print("Loading catalog and building index...")
+
 with open("catalog.pkl", "rb") as f:
     CATALOG: list = pickle.load(f)
+
+# lightweight TF-IDF instead of sentence-transformers — fits in 512MB
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+
+def make_text(a):
+    parts = [a["name"]]
+    if a.get("test_type") and a["test_type"] != "Unknown":
+        parts.append(a["test_type"])
+    if a.get("description"):
+        parts.append(a["description"])
+    return " ".join(parts)
+
+corpus = [make_text(a) for a in CATALOG]
+vectorizer = TfidfVectorizer(max_features=5000, stop_words="english")
+tfidf_matrix = vectorizer.fit_transform(corpus)
+
 client = Groq()
 print(f"Ready — {len(CATALOG)} assessments loaded")
 
@@ -42,12 +54,12 @@ class ChatResponse(BaseModel):
 
 
 def retrieve(messages: List[Message], k: int = 20) -> list:
-    # last 3 user turns captures refinements without pulling in stale context
     user_turns = [m.content for m in messages if m.role == "user"]
     query = " ".join(user_turns[-3:])
-    vec = embed_model.encode([query], normalize_embeddings=True).astype("float32")
-    scores, ids = index.search(vec, k)
-    return [CATALOG[i] for i in ids[0]]
+    q_vec = vectorizer.transform([query])
+    scores = cosine_similarity(q_vec, tfidf_matrix).flatten()
+    top_ids = scores.argsort()[-k:][::-1]
+    return [CATALOG[i] for i in top_ids]
 
 
 SYSTEM_TEMPLATE = """You are an SHL assessment recommender assistant.
@@ -96,7 +108,6 @@ def build_system(catalog_items: list) -> str:
 
 
 def parse_response(raw: str) -> ChatResponse:
-    # strip markdown fences the model sometimes adds
     raw = re.sub(r"```json|```", "", raw).strip()
     try:
         data = json.loads(raw)
@@ -110,7 +121,6 @@ def parse_response(raw: str) -> ChatResponse:
             end_of_conversation=data.get("end_of_conversation", False)
         )
     except (json.JSONDecodeError, KeyError):
-        # if parsing fails, return the raw text rather than crashing
         return ChatResponse(reply=raw, recommendations=[], end_of_conversation=False)
 
 

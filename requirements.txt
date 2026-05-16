@@ -1,8 +1,7 @@
 fastapi
 uvicorn[standard]
 groq>=0.4.0
-sentence-transformers
-faiss-cpu
+scikit-learn
 beautifulsoup4
 requests
 numpy
