@@ -124,7 +124,7 @@ def parse_response(raw: str) -> ChatResponse:
         return ChatResponse(reply=raw, recommendations=[], end_of_conversation=False)
 
 
-@app.get("/health")
+@app.api_route("/health", methods=["GET", "HEAD"])
 def health():
     return {"status": "ok"}
 
